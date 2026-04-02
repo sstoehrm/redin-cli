@@ -1,0 +1,232 @@
+#!/usr/bin/env bb
+
+(require '[babashka.http-client :as http]
+         '[cheshire.core :as json]
+         '[clojure.java.io :as io]
+         '[clojure.string :as str])
+
+(def github-repo "sstoehrm/redin")
+(def github-api (str "https://api.github.com/repos/" github-repo))
+
+;; ---------------------------------------------------------------------------
+;; GitHub API
+;; ---------------------------------------------------------------------------
+
+(defn fetch-latest-version []
+  (let [resp (http/get (str github-api "/releases/latest")
+                       {:headers {"Accept" "application/vnd.github.v3+json"}})
+        data (json/decode (:body resp) true)]
+    (:tag_name data)))
+
+(defn fetch-release-info [version]
+  (let [resp (http/get (str github-api "/releases/tags/" version)
+                       {:headers {"Accept" "application/vnd.github.v3+json"}})
+        data (json/decode (:body resp) true)]
+    data))
+
+(defn find-tarball-url [release]
+  (let [assets (:assets release)]
+    (->> assets
+         (filter #(str/ends-with? (:name %) "-linux-amd64.tar.gz"))
+         first
+         :browser_download_url)))
+
+(defn download-file [url dest]
+  (println (str "  Downloading " url))
+  (let [resp (http/get url {:as :stream})]
+    (io/copy (:body resp) (io/file dest))))
+
+;; ---------------------------------------------------------------------------
+;; Install release into .redin/
+;; ---------------------------------------------------------------------------
+
+(defn install-release [dir version]
+  (let [redin-dir (io/file dir ".redin")
+        tarball (io/file dir ".redin-download.tar.gz")]
+    ;; Fetch release info
+    (print (str "Fetching release " version "... "))
+    (flush)
+    (let [release (fetch-release-info version)
+          url (find-tarball-url release)]
+      (when-not url
+        (println "FAILED")
+        (println (str "No linux-amd64 tarball found for " version))
+        (System/exit 1))
+      (println "OK"))
+
+    ;; Download
+    (let [release (fetch-release-info version)
+          url (find-tarball-url release)]
+      (download-file url (.getPath tarball)))
+
+    ;; Remove old .redin/ contents (keep directory)
+    (when (.exists redin-dir)
+      (doseq [f (reverse (file-seq redin-dir))]
+        (when (not= f redin-dir)
+          (.delete f))))
+    (.mkdirs redin-dir)
+
+    ;; Extract
+    (println "  Extracting...")
+    (let [exit (-> (ProcessBuilder. ["tar" "xzf" (.getAbsolutePath tarball) "-C" (.getAbsolutePath redin-dir)])
+                   (.directory (io/file dir))
+                   .start
+                   .waitFor)]
+      (when (not= exit 0)
+        (println "  ERROR: tar extraction failed")
+        (System/exit 1)))
+
+    ;; Write version file
+    (spit (io/file redin-dir "version") (str version "\n"))
+
+    ;; Make binary executable
+    (let [bin (io/file redin-dir "redin")]
+      (when (.exists bin)
+        (.setExecutable bin true)))
+
+    ;; Cleanup tarball
+    (.delete tarball)
+
+    (println (str "  Installed redin " version " into .redin/"))))
+
+;; ---------------------------------------------------------------------------
+;; Scaffold: redinw wrapper
+;; ---------------------------------------------------------------------------
+
+(def redinw-content
+  "#!/usr/bin/env bash
+SCRIPT_DIR=\"$(cd \"$(dirname \"$0\")\" && pwd)\"
+exec \"$SCRIPT_DIR/.redin/redin\" \"$@\"
+")
+
+;; ---------------------------------------------------------------------------
+;; Scaffold: starter files
+;; ---------------------------------------------------------------------------
+
+(def main-fnl
+  "(local dataflow (require :dataflow))
+
+(dataflow.init {:counter 0})
+
+(reg-handler :event/inc
+  (fn [db event]
+    (update db :counter #(+ $1 1))))
+
+(reg-sub :sub/counter
+  (fn [db] (get db :counter)))
+
+(fn _G.main_view []
+  (let [count (subscribe :sub/counter)]
+    {:frame
+     [:vbox {:aspect :surface :gap 16}
+       [:text {:aspect :heading} (tostring count)]
+       [:rect {:id :inc-btn :aspect :button :height 40}
+         [:text {:aspect :button} \"+1\"]]]
+     :bind
+     {[:vbox :rect] {:click [:event/inc]}}}))
+")
+
+(def theme-fnl
+  "(redin.set_theme
+  {:surface       {:bg [46 52 64] :padding [24 24 24 24]}
+   :heading       {:font-size 48 :color [236 239 244] :weight :bold}
+   :body          {:font-size 14 :color [216 222 233]}
+   :muted         {:font-size 12 :color [76 86 106]}
+   :button        {:bg [76 86 106] :color [236 239 244] :radius 6 :padding [8 16 8 16]}
+   :button.hover  {:bg [94 105 126]}})
+")
+
+(def gitignore-content
+  ".redin/
+")
+
+;; ---------------------------------------------------------------------------
+;; Commands
+;; ---------------------------------------------------------------------------
+
+(defn cmd-new [name]
+  (when (or (nil? name) (str/blank? name))
+    (println "Usage: redin-cli new <project-name>")
+    (System/exit 1))
+
+  (let [dir (io/file name)]
+    (when (.exists dir)
+      (println (str "Directory '" name "' already exists."))
+      (System/exit 1))
+
+    (println (str "Creating redin project: " name))
+    (.mkdirs dir)
+
+    ;; Fetch and install latest release
+    (let [version (fetch-latest-version)]
+      (println (str "Latest version: " version))
+      (install-release (.getPath dir) version))
+
+    ;; Generate redinw
+    (let [wrapper (io/file dir "redinw")]
+      (spit wrapper redinw-content)
+      (.setExecutable wrapper true))
+
+    ;; Generate starter files
+    (spit (io/file dir "main.fnl") main-fnl)
+    (spit (io/file dir "theme.fnl") theme-fnl)
+    (spit (io/file dir ".gitignore") gitignore-content)
+
+    ;; Init git
+    (let [pb (ProcessBuilder. ["git" "init"])]
+      (.directory pb dir)
+      (-> pb .start .waitFor))
+    (let [pb (ProcessBuilder. ["git" "add" "-A"])]
+      (.directory pb dir)
+      (-> pb .start .waitFor))
+    (let [pb (ProcessBuilder. ["git" "commit" "-m" "initial: redin project"])]
+      (.directory pb dir)
+      (-> pb .start .waitFor))
+
+    (println)
+    (println (str "Done! To get started:"))
+    (println (str "  cd " name))
+    (println (str "  ./redinw --dev main"))
+    (println)))
+
+(defn cmd-update [version-arg]
+  ;; Must be run from a project directory with .redin/
+  (when-not (.exists (io/file ".redin"))
+    (println "Not a redin project (no .redin/ directory).")
+    (println "Run this from your project root.")
+    (System/exit 1))
+
+  (let [current (str/trim (slurp ".redin/version"))
+        version (or version-arg (fetch-latest-version))]
+    (if (= current version)
+      (println (str "Already on " version))
+      (do
+        (println (str "Updating from " current " to " version))
+        (install-release "." version)
+        (println "Done!")))))
+
+(defn cmd-latest []
+  (let [version (fetch-latest-version)]
+    (println version)))
+
+;; ---------------------------------------------------------------------------
+;; Main
+;; ---------------------------------------------------------------------------
+
+(let [args *command-line-args*
+      cmd (first args)]
+  (case cmd
+    "new"    (cmd-new (second args))
+    "update" (cmd-update (second args))
+    "latest" (cmd-latest)
+    (do
+      (println "redin-cli — redin project manager")
+      (println)
+      (println "Commands:")
+      (println "  redin-cli new <name>       Create a new redin project")
+      (println "  redin-cli update [version] Update redin to latest or specified version")
+      (println "  redin-cli latest           Print latest available version")
+      (when cmd
+        (println)
+        (println (str "Unknown command: " cmd))
+        (System/exit 1)))))

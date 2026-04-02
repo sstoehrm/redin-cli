@@ -172,17 +172,6 @@ exec \"$SCRIPT_DIR/.redin/redin\" \"$@\"
     (spit (io/file dir "theme.fnl") theme-fnl)
     (spit (io/file dir ".gitignore") gitignore-content)
 
-    ;; Init git
-    (let [pb (ProcessBuilder. ["git" "init"])]
-      (.directory pb dir)
-      (-> pb .start .waitFor))
-    (let [pb (ProcessBuilder. ["git" "add" "-A"])]
-      (.directory pb dir)
-      (-> pb .start .waitFor))
-    (let [pb (ProcessBuilder. ["git" "commit" "-m" "initial: redin project"])]
-      (.directory pb dir)
-      (-> pb .start .waitFor))
-
     (println)
     (println (str "Done! To get started:"))
     (println (str "  cd " name))

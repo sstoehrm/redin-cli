@@ -149,13 +149,13 @@ exec \"$SCRIPT_DIR/.redin/redin\" \"$@\"
     (println "Usage: redin-cli new <project-name>")
     (System/exit 1))
 
-  (let [dir (io/file name)]
-    (when (.exists dir)
-      (println (str "Directory '" name "' already exists."))
-      (System/exit 1))
-
-    (println (str "Creating redin project: " name))
-    (.mkdirs dir)
+  (let [dir (io/file name)
+        existing? (.exists dir)]
+    (if existing?
+      (println (str "Installing redin into " name))
+      (do
+        (println (str "Creating redin project: " name))
+        (.mkdirs dir)))
 
     ;; Fetch and install latest release
     (let [version (fetch-latest-version)]
@@ -167,15 +167,17 @@ exec \"$SCRIPT_DIR/.redin/redin\" \"$@\"
       (spit wrapper redinw-content)
       (.setExecutable wrapper true))
 
-    ;; Generate starter files
-    (spit (io/file dir "main.fnl") main-fnl)
-    (spit (io/file dir "theme.fnl") theme-fnl)
-    (spit (io/file dir ".gitignore") gitignore-content)
+    ;; Generate starter files only for new projects
+    (when-not existing?
+      (spit (io/file dir "main.fnl") main-fnl)
+      (spit (io/file dir "theme.fnl") theme-fnl)
+      (spit (io/file dir ".gitignore") gitignore-content))
 
     (println)
-    (println (str "Done! To get started:"))
-    (println (str "  cd " name))
-    (println (str "  ./redinw --dev main"))
+    (println "Done!")
+    (when-not existing?
+      (println (str "  cd " name)))
+    (println "  ./redinw --dev main")
     (println)))
 
 (defn cmd-update [version-arg]
@@ -212,7 +214,7 @@ exec \"$SCRIPT_DIR/.redin/redin\" \"$@\"
       (println "redin-cli — redin project manager")
       (println)
       (println "Commands:")
-      (println "  redin-cli new <name>       Create a new redin project")
+      (println "  redin-cli new <name|.>     Create a new redin project (use . for current dir)")
       (println "  redin-cli update [version] Update redin to latest or specified version")
       (println "  redin-cli latest           Print latest available version")
       (when cmd

@@ -272,6 +272,15 @@ odin build \"$SCRIPT_DIR\" -out:\"$PROJECT_DIR/build/redin\"
 ;; Commands
 ;; ---------------------------------------------------------------------------
 
+(defn copy-tree [src dst]
+  (doseq [f (file-seq src)]
+    (let [rel (.relativize (.toPath src) (.toPath f))
+          target (io/file dst (.toString rel))]
+      (if (.isDirectory f)
+        (.mkdirs target)
+        (do (.mkdirs (.getParentFile target))
+            (io/copy f target))))))
+
 (defn scaffold-common [dir]
   ;; redinw
   (let [wrapper (io/file dir "redinw")]
@@ -280,7 +289,12 @@ odin build \"$SCRIPT_DIR\" -out:\"$PROJECT_DIR/build/redin\"
   ;; .gitignore
   (let [gi (io/file dir ".gitignore")]
     (when-not (.exists gi)
-      (spit gi gitignore-content))))
+      (spit gi gitignore-content)))
+  ;; Copy skills from .redin/ into project root
+  (let [skills-src (io/file dir ".redin/skills")
+        skills-dst (io/file dir "skills")]
+    (when (.exists skills-src)
+      (copy-tree skills-src skills-dst))))
 
 (defn cmd-new-fnl [name]
   (when (or (nil? name) (str/blank? name))
@@ -310,7 +324,8 @@ odin build \"$SCRIPT_DIR\" -out:\"$PROJECT_DIR/build/redin\"
     (when-not existing?
       (println (str "  cd " name)))
     (println "  ./redinw --dev main.fnl")
-    (println "  Docs: .redin/docs/")
+    (println "  Docs:  .redin/docs/")
+    (println "  Skill: skills/redin-dev/  (Claude Code)")
     (println)))
 
 (defn cmd-new-lua [name]
@@ -341,7 +356,8 @@ odin build \"$SCRIPT_DIR\" -out:\"$PROJECT_DIR/build/redin\"
     (when-not existing?
       (println (str "  cd " name)))
     (println "  ./redinw --dev main.lua")
-    (println "  Docs: .redin/docs/")
+    (println "  Docs:  .redin/docs/")
+    (println "  Skill: skills/redin-dev/  (Claude Code)")
     (println)))
 
 (defn cmd-upgrade-to-native []
@@ -473,6 +489,40 @@ odin build \"$SCRIPT_DIR\" -out:\"$PROJECT_DIR/build/redin\"
   (let [version (fetch-latest-version)]
     (println version)))
 
+(defn cmd-help []
+  (println "redin-cli — redin project manager")
+  (println)
+  (println "Commands:")
+  (println "  redin-cli new-fnl <name>      Create a Fennel redin project")
+  (println "  redin-cli new-lua <name>      Create a Lua redin project")
+  (println "  redin-cli upgrade-to-native   Add Odin source for native canvas providers")
+  (println "  redin-cli update [version]    Update redin to latest or specified version")
+  (println "  redin-cli latest              Print latest available version")
+  (println "  redin-cli help                Show this help")
+  (println)
+  (println "Project structure:")
+  (println "  .redin/           Pinned redin binary + runtime (gitignored)")
+  (println "  .redin/docs/      API docs, guides, references")
+  (println "  skills/           Claude Code skill for redin development")
+  (println "  redinw            Wrapper script (committed to git)")
+  (println)
+  (println "After creating a project:")
+  (println "  ./redinw --dev main.fnl       Run with dev server + hot reload")
+  (println "  ./redinw main.fnl             Run without dev server")
+  (println)
+  (println "Dev server (--dev mode, http://localhost:8800):")
+  (println "  GET  /frames                  View tree as JSON")
+  (println "  GET  /state                   Full app state")
+  (println "  GET  /state/path.to.value     Nested state lookup")
+  (println "  GET  /screenshot              PNG screenshot")
+  (println "  POST /events                  Dispatch event")
+  (println "  POST /click                   Inject mouse click")
+  (println "  POST /shutdown                Graceful shutdown")
+  (println)
+  (println "Documentation:  .redin/docs/core-api.md, .redin/docs/app-api.md")
+  (println "Guides:         .redin/docs/guide/")
+  (println "Reference:      .redin/docs/reference/"))
+
 ;; ---------------------------------------------------------------------------
 ;; Main
 ;; ---------------------------------------------------------------------------
@@ -485,16 +535,10 @@ odin build \"$SCRIPT_DIR\" -out:\"$PROJECT_DIR/build/redin\"
     "upgrade-to-native" (cmd-upgrade-to-native)
     "update"            (cmd-update (second args))
     "latest"            (cmd-latest)
+    "help"              (cmd-help)
     (do
-      (println "redin-cli — redin project manager")
-      (println)
-      (println "Commands:")
-      (println "  redin-cli new-fnl <name>      Create a Fennel redin project")
-      (println "  redin-cli new-lua <name>      Create a Lua redin project")
-      (println "  redin-cli upgrade-to-native   Add Odin source for native canvas providers")
-      (println "  redin-cli update [version]    Update redin to latest or specified version")
-      (println "  redin-cli latest              Print latest available version")
-      (when cmd
+      (cmd-help)
+      (when (and cmd (not= cmd "--help") (not= cmd "-h"))
         (println)
         (println (str "Unknown command: " cmd))
         (System/exit 1)))))

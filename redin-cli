@@ -301,9 +301,8 @@ odin build \"$SCRIPT_DIR\" -out:\"$PROJECT_DIR/build/redin\"
     (println "Usage: redin-cli new-fnl <project-name>")
     (System/exit 1))
 
-  (let [dir (io/file name)
-        existing? (.exists dir)]
-    (if existing?
+  (let [dir (io/file name)]
+    (if (.exists dir)
       (println (str "Installing redin into " name))
       (do
         (println (str "Creating Fennel redin project: " name))
@@ -315,14 +314,16 @@ odin build \"$SCRIPT_DIR\" -out:\"$PROJECT_DIR/build/redin\"
 
     (scaffold-common dir)
 
-    (when-not existing?
-      (spit (io/file dir "main.fnl") main-fnl)
-      (spit (io/file dir "flsproject.fnl") flsproject-fnl))
+    ;; Write starter files if they don't exist yet
+    (let [main-file (io/file dir "main.fnl")]
+      (when-not (.exists main-file)
+        (spit main-file main-fnl)))
+    (let [fls-file (io/file dir "flsproject.fnl")]
+      (when-not (.exists fls-file)
+        (spit fls-file flsproject-fnl)))
 
     (println)
     (println "Done!")
-    (when-not existing?
-      (println (str "  cd " name)))
     (println "  ./redinw --dev main.fnl")
     (println "  Docs:  .redin/docs/")
     (println "  Skill: skills/redin-dev/  (Claude Code)")
@@ -333,9 +334,8 @@ odin build \"$SCRIPT_DIR\" -out:\"$PROJECT_DIR/build/redin\"
     (println "Usage: redin-cli new-lua <project-name>")
     (System/exit 1))
 
-  (let [dir (io/file name)
-        existing? (.exists dir)]
-    (if existing?
+  (let [dir (io/file name)]
+    (if (.exists dir)
       (println (str "Installing redin into " name))
       (do
         (println (str "Creating Lua redin project: " name))
@@ -347,14 +347,16 @@ odin build \"$SCRIPT_DIR\" -out:\"$PROJECT_DIR/build/redin\"
 
     (scaffold-common dir)
 
-    (when-not existing?
-      (spit (io/file dir "main.lua") main-lua)
-      (spit (io/file dir ".luarc.json") luarc-json))
+    ;; Write starter files if they don't exist yet
+    (let [main-file (io/file dir "main.lua")]
+      (when-not (.exists main-file)
+        (spit main-file main-lua)))
+    (let [luarc-file (io/file dir ".luarc.json")]
+      (when-not (.exists luarc-file)
+        (spit luarc-file luarc-json)))
 
     (println)
     (println "Done!")
-    (when-not existing?
-      (println (str "  cd " name)))
     (println "  ./redinw --dev main.lua")
     (println "  Docs:  .redin/docs/")
     (println "  Skill: skills/redin-dev/  (Claude Code)")

@@ -31,6 +31,9 @@
          first
          :browser_download_url)))
 
+(defn find-source-tarball-url [release]
+  (:tarball_url release))
+
 (defn download-file [url dest]
   (println (str "  Downloading " url))
   (let [resp (http/get url {:as :stream})]
@@ -90,63 +93,198 @@
     (println (str "  Installed redin " version " into .redin/"))))
 
 ;; ---------------------------------------------------------------------------
-;; Scaffold: redinw wrapper
+;; Templates: redinw
 ;; ---------------------------------------------------------------------------
 
-(def redinw-content
+(def redinw-script
   "#!/usr/bin/env bash
 SCRIPT_DIR=\"$(cd \"$(dirname \"$0\")\" && pwd)\"
 exec \"$SCRIPT_DIR/.redin/redin\" \"$@\"
 ")
 
+(def redinw-native-script
+  "#!/usr/bin/env bash
+SCRIPT_DIR=\"$(cd \"$(dirname \"$0\")\" && pwd)\"
+if [ -f \"$SCRIPT_DIR/build/redin\" ]; then
+  exec \"$SCRIPT_DIR/build/redin\" \"$@\"
+else
+  exec \"$SCRIPT_DIR/.redin/redin\" \"$@\"
+fi
+")
+
 ;; ---------------------------------------------------------------------------
-;; Scaffold: starter files
+;; Templates: Fennel
 ;; ---------------------------------------------------------------------------
 
 (def main-fnl
   "(local dataflow (require :dataflow))
+(local theme-mod (require :theme))
+(local canvas (require :canvas))
+
+(theme-mod.set-theme
+  {:surface {:bg [46 52 64] :padding [24 24 24 24]}
+   :heading {:font-size 48 :color [236 239 244] :weight 1}
+   :button  {:bg [76 86 106] :color [236 239 244]
+             :radius 6 :padding [8 16 8 16]}
+   :button#hover {:bg [94 105 126]}})
 
 (dataflow.init {:counter 0})
+(global redin_get_state (. dataflow :_get-raw-db))
 
 (reg-handler :event/inc
-  (fn [db event]
-    (update db :counter #(+ $1 1))))
+  (fn [db event] (update db :counter #(+ $1 1))))
 
 (reg-sub :sub/counter
   (fn [db] (get db :counter)))
 
-(fn _G.main_view []
-  (let [count (subscribe :sub/counter)]
-    {:frame
-     [:vbox {:aspect :surface :gap 16}
-       [:text {:aspect :heading} (tostring count)]
-       [:rect {:id :inc-btn :aspect :button :height 40}
-         [:text {:aspect :button} \"+1\"]]]
-     :bind
-     {[:vbox :rect] {:click [:event/inc]}}}))
+(canvas.register :background
+  (fn [ctx]
+    (let [t (redin.now) w ctx.width h ctx.height]
+      (ctx.rect 0 0 w h {:fill [36 42 54]})
+      (for [i 1 5]
+        (let [x (+ (* w 0.5) (* (* w 0.3) (math.sin (+ (* t 0.2 i) (* i 1.5)))))
+              y (+ (* h 0.5) (* (* h 0.3) (math.cos (+ (* t 0.15 i) (* i 2.0)))))]
+          (ctx.circle x y (+ 30 (* 20 i)) {:fill [60 70 90 20]}))))))
+
+(global main_view
+  (fn []
+    (let [count (subscribe :sub/counter)]
+      [:stack {:viewport [[:top_left 0 0 :full :full]
+                          [:top_left 0 0 :full :full]]}
+        [:canvas {:provider :background :width :full :height :full}]
+        [:vbox {:aspect :surface :layout :center}
+          [:text {:aspect :heading :layout :center} (tostring count)]
+          [:button {:aspect :button :click [:event/inc]
+                    :width 120 :height 42}
+                   \"+1\"]]])))
 ")
 
-(def theme-fnl
-  "(redin.set_theme
-  {:surface       {:bg [46 52 64] :padding [24 24 24 24]}
-   :heading       {:font-size 48 :color [236 239 244] :weight :bold}
-   :body          {:font-size 14 :color [216 222 233]}
-   :muted         {:font-size 12 :color [76 86 106]}
-   :button        {:bg [76 86 106] :color [236 239 244] :radius 6 :padding [8 16 8 16]}
-   :button.hover  {:bg [94 105 126]}})
+(def flsproject-fnl
+  "{:lua-version \"lua5.1\"
+ :extra-globals \"get get-in assoc assoc-in update update-in dissoc dissoc-in reg-handler reg-sub subscribe dispatch reg-fx main_view redin_get_state redin\"}
 ")
 
-(def gitignore-content
-  ".redin/
+;; ---------------------------------------------------------------------------
+;; Templates: Lua
+;; ---------------------------------------------------------------------------
+
+(def main-lua
+  "local dataflow = require(\"dataflow\")
+local theme = require(\"theme\")
+local canvas = require(\"canvas\")
+
+theme[\"set-theme\"]({
+  surface = {bg = {46, 52, 64}, padding = {24, 24, 24, 24}},
+  heading = {[\"font-size\"] = 48, color = {236, 239, 244}, weight = 1},
+  button = {bg = {76, 86, 106}, color = {236, 239, 244},
+            radius = 6, padding = {8, 16, 8, 16}},
+  [\"button#hover\"] = {bg = {94, 105, 126}},
+})
+
+dataflow.init({counter = 0})
+redin_get_state = dataflow[\"_get-raw-db\"]
+
+reg_handler(\"event/inc\", function(db, event)
+  return update(db, \"counter\", function(n) return (n or 0) + 1 end)
+end)
+
+reg_sub(\"sub/counter\", function(db)
+  return get(db, \"counter\")
+end)
+
+canvas.register(\"background\", function(ctx)
+  local t = redin.now()
+  local w, h = ctx.width, ctx.height
+  ctx.rect(0, 0, w, h, {fill = {36, 42, 54}})
+  for i = 1, 5 do
+    local x = w*0.5 + w*0.3 * math.sin(t*0.2*i + i*1.5)
+    local y = h*0.5 + h*0.3 * math.cos(t*0.15*i + i*2.0)
+    ctx.circle(x, y, 30 + 20*i, {fill = {60, 70, 90, 20}})
+  end
+end)
+
+function main_view()
+  local count = subscribe(\"sub/counter\")
+  return {\"vbox\", {},
+    {\"stack\", {viewport = {
+      {\"top_left\", 0, 0, \"full\", \"full\"},
+      {\"top_left\", 0, 0, \"full\", \"full\"},
+    }},
+      {\"canvas\", {provider = \"background\", width = \"full\", height = \"full\"}},
+      {\"vbox\", {aspect = \"surface\", layout = \"center\"},
+        {\"text\", {aspect = \"heading\", layout = \"center\"}, tostring(count)},
+        {\"button\", {aspect = \"button\", click = {\"event/inc\"},
+                    width = 120, height = 42}, \"+1\"}}}}
+end
 ")
+
+(def luarc-json
+  "{
+  \"diagnostics.globals\": [
+    \"redin\", \"redin_get_state\",
+    \"get\", \"get_in\", \"assoc\", \"assoc_in\",
+    \"update\", \"update_in\", \"dissoc\", \"dissoc_in\",
+    \"reg_handler\", \"reg_sub\", \"subscribe\", \"dispatch\", \"reg_fx\",
+    \"main_view\"
+  ]
+}
+")
+
+;; ---------------------------------------------------------------------------
+;; Templates: Native (upgrade-to-native)
+;; ---------------------------------------------------------------------------
+
+(def providers-odin
+  "package host
+
+import \"canvas\"
+import rl \"vendor:raylib\"
+
+// Example: register a native Odin canvas provider.
+// Reference it from Fennel/Lua with [:canvas {:provider :my-provider ...}]
+
+my_provider := canvas.Canvas_Provider{
+\tupdate = proc(rect: rl.Rectangle) {
+\t\trl.DrawRectangleRec(rect, rl.Color{40, 40, 60, 255})
+\t},
+}
+
+init_providers :: proc() {
+\tcanvas.register(\"my-provider\", my_provider)
+}
+")
+
+(def build-sh
+  "#!/usr/bin/env bash
+SCRIPT_DIR=\"$(cd \"$(dirname \"$0\")\" && pwd)\"
+PROJECT_DIR=\"$(dirname \"$SCRIPT_DIR\")\"
+mkdir -p \"$PROJECT_DIR/build\"
+odin build \"$SCRIPT_DIR\" -out:\"$PROJECT_DIR/build/redin\"
+")
+
+;; ---------------------------------------------------------------------------
+;; Shared
+;; ---------------------------------------------------------------------------
+
+(def gitignore-content ".redin/\n")
 
 ;; ---------------------------------------------------------------------------
 ;; Commands
 ;; ---------------------------------------------------------------------------
 
-(defn cmd-new [name]
+(defn scaffold-common [dir]
+  ;; redinw
+  (let [wrapper (io/file dir "redinw")]
+    (spit wrapper redinw-script)
+    (.setExecutable wrapper true))
+  ;; .gitignore
+  (let [gi (io/file dir ".gitignore")]
+    (when-not (.exists gi)
+      (spit gi gitignore-content))))
+
+(defn cmd-new-fnl [name]
   (when (or (nil? name) (str/blank? name))
-    (println "Usage: redin-cli new <project-name>")
+    (println "Usage: redin-cli new-fnl <project-name>")
     (System/exit 1))
 
   (let [dir (io/file name)
@@ -154,34 +292,167 @@ exec \"$SCRIPT_DIR/.redin/redin\" \"$@\"
     (if existing?
       (println (str "Installing redin into " name))
       (do
-        (println (str "Creating redin project: " name))
+        (println (str "Creating Fennel redin project: " name))
         (.mkdirs dir)))
 
-    ;; Fetch and install latest release
     (let [version (fetch-latest-version)]
       (println (str "Latest version: " version))
       (install-release (.getPath dir) version))
 
-    ;; Generate redinw
-    (let [wrapper (io/file dir "redinw")]
-      (spit wrapper redinw-content)
-      (.setExecutable wrapper true))
+    (scaffold-common dir)
 
-    ;; Generate starter files only for new projects
     (when-not existing?
       (spit (io/file dir "main.fnl") main-fnl)
-      (spit (io/file dir "theme.fnl") theme-fnl)
-      (spit (io/file dir ".gitignore") gitignore-content))
+      (spit (io/file dir "flsproject.fnl") flsproject-fnl))
 
     (println)
     (println "Done!")
     (when-not existing?
       (println (str "  cd " name)))
-    (println "  ./redinw --dev main")
+    (println "  ./redinw --dev main.fnl")
+    (println)))
+
+(defn cmd-new-lua [name]
+  (when (or (nil? name) (str/blank? name))
+    (println "Usage: redin-cli new-lua <project-name>")
+    (System/exit 1))
+
+  (let [dir (io/file name)
+        existing? (.exists dir)]
+    (if existing?
+      (println (str "Installing redin into " name))
+      (do
+        (println (str "Creating Lua redin project: " name))
+        (.mkdirs dir)))
+
+    (let [version (fetch-latest-version)]
+      (println (str "Latest version: " version))
+      (install-release (.getPath dir) version))
+
+    (scaffold-common dir)
+
+    (when-not existing?
+      (spit (io/file dir "main.lua") main-lua)
+      (spit (io/file dir ".luarc.json") luarc-json))
+
+    (println)
+    (println "Done!")
+    (when-not existing?
+      (println (str "  cd " name)))
+    (println "  ./redinw --dev main.lua")
+    (println)))
+
+(defn cmd-upgrade-to-native []
+  (when-not (.exists (io/file ".redin"))
+    (println "Not a redin project (no .redin/ directory).")
+    (println "Run this from your project root.")
+    (System/exit 1))
+
+  (let [version (str/trim (slurp ".redin/version"))
+        native-dir (io/file "native")]
+
+    ;; Download source into .redin/
+    (println (str "Fetching redin source (" version ")..."))
+    (let [release (fetch-release-info version)
+          source-url (find-source-tarball-url release)
+          tarball (io/file ".redin-source.tar.gz")]
+      (when-not source-url
+        (println "ERROR: No source tarball found for this release.")
+        (System/exit 1))
+      (download-file source-url (.getPath tarball))
+
+      ;; Extract source into temp dir, then copy src/ and vendor/
+      (println "  Extracting source...")
+      (let [tmp-dir (io/file ".redin-source-tmp")]
+        (.mkdirs tmp-dir)
+        (let [exit (-> (ProcessBuilder. ["tar" "xzf" (.getAbsolutePath tarball)
+                                         "-C" (.getAbsolutePath tmp-dir)
+                                         "--strip-components=1"])
+                       .start
+                       .waitFor)]
+          (when (not= exit 0)
+            (println "  ERROR: source extraction failed")
+            (System/exit 1)))
+
+        ;; Copy src/ and vendor/ into .redin/
+        (doseq [subdir ["src" "vendor"]]
+          (let [src (io/file tmp-dir subdir)
+                dst (io/file ".redin" subdir)]
+            (when (.exists src)
+              ;; Remove old
+              (when (.exists dst)
+                (doseq [f (reverse (file-seq dst))]
+                  (when (not= f dst) (.delete f))))
+              ;; Copy
+              (doseq [f (file-seq src)]
+                (let [rel (.relativize (.toPath src) (.toPath f))
+                      target (io/file dst (.toString rel))]
+                  (if (.isDirectory f)
+                    (.mkdirs target)
+                    (do (.mkdirs (.getParentFile target))
+                        (io/copy f target))))))))
+
+        ;; Cleanup
+        (doseq [f (reverse (file-seq tmp-dir))]
+          (.delete f))
+        (.delete tarball)))
+
+    ;; Create native/ directory
+    (if (.exists native-dir)
+      (println "  native/ already exists, preserving user files")
+      (.mkdirs native-dir))
+
+    ;; Copy host source into native/
+    (let [host-src (io/file ".redin/src/host")]
+      (when (.exists host-src)
+        (println "  Copying host source into native/...")
+        (doseq [f (file-seq host-src)]
+          (let [rel (.relativize (.toPath host-src) (.toPath f))
+                target (io/file native-dir (.toString rel))]
+            (if (.isDirectory f)
+              (.mkdirs target)
+              ;; Don't overwrite user-created files not in framework
+              (when (or (not (.exists target))
+                        ;; Always update framework files
+                        (not= (.getName target) "providers.odin"))
+                (.mkdirs (.getParentFile target))
+                (io/copy f target)))))))
+
+    ;; Write providers.odin if it doesn't exist
+    (let [providers-file (io/file native-dir "providers.odin")]
+      (when-not (.exists providers-file)
+        (spit providers-file providers-odin)))
+
+    ;; Inject init_providers() into main.odin if not already present
+    (let [main-file (io/file native-dir "main.odin")
+          content (slurp main-file)]
+      (when-not (str/includes? content "init_providers")
+        (spit main-file
+              (str/replace content
+                           "bridge.load_app(&b, app_file)"
+                           "bridge.load_app(&b, app_file)\n\n\t// Register custom canvas providers\n\tinit_providers()"))))
+
+    ;; Write build.sh
+    (let [bs (io/file native-dir "build.sh")]
+      (spit bs build-sh)
+      (.setExecutable bs true))
+
+    ;; Update redinw to prefer native build
+    (spit "redinw" redinw-native-script)
+    (.setExecutable (io/file "redinw") true)
+
+    ;; Update .gitignore
+    (let [gi (slurp ".gitignore")]
+      (when-not (str/includes? gi "build/")
+        (spit ".gitignore" (str gi "build/\n"))))
+
+    (println)
+    (println "Done! Native development ready.")
+    (println "  cd native && ./build.sh    # build custom binary")
+    (println "  ./redinw --dev main.fnl    # runs native build if available")
     (println)))
 
 (defn cmd-update [version-arg]
-  ;; Must be run from a project directory with .redin/
   (when-not (.exists (io/file ".redin"))
     (println "Not a redin project (no .redin/ directory).")
     (println "Run this from your project root.")
@@ -207,16 +478,20 @@ exec \"$SCRIPT_DIR/.redin/redin\" \"$@\"
 (let [args *command-line-args*
       cmd (first args)]
   (case cmd
-    "new"    (cmd-new (second args))
-    "update" (cmd-update (second args))
-    "latest" (cmd-latest)
+    "new-fnl"           (cmd-new-fnl (second args))
+    "new-lua"           (cmd-new-lua (second args))
+    "upgrade-to-native" (cmd-upgrade-to-native)
+    "update"            (cmd-update (second args))
+    "latest"            (cmd-latest)
     (do
       (println "redin-cli — redin project manager")
       (println)
       (println "Commands:")
-      (println "  redin-cli new <name|.>     Create a new redin project (use . for current dir)")
-      (println "  redin-cli update [version] Update redin to latest or specified version")
-      (println "  redin-cli latest           Print latest available version")
+      (println "  redin-cli new-fnl <name>      Create a Fennel redin project")
+      (println "  redin-cli new-lua <name>      Create a Lua redin project")
+      (println "  redin-cli upgrade-to-native   Add Odin source for native canvas providers")
+      (println "  redin-cli update [version]    Update redin to latest or specified version")
+      (println "  redin-cli latest              Print latest available version")
       (when cmd
         (println)
         (println (str "Unknown command: " cmd))

@@ -266,7 +266,7 @@ odin build \"$SCRIPT_DIR\" -out:\"$PROJECT_DIR/build/redin\"
 ;; Shared
 ;; ---------------------------------------------------------------------------
 
-(def gitignore-content ".redin/\n")
+(def gitignore-content ".redin/\nskills/\n")
 
 ;; ---------------------------------------------------------------------------
 ;; Commands

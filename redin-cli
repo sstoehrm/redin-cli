@@ -310,6 +310,7 @@ odin build \"$SCRIPT_DIR\" -out:\"$PROJECT_DIR/build/redin\"
     (when-not existing?
       (println (str "  cd " name)))
     (println "  ./redinw --dev main.fnl")
+    (println "  Docs: .redin/docs/")
     (println)))
 
 (defn cmd-new-lua [name]
@@ -340,6 +341,7 @@ odin build \"$SCRIPT_DIR\" -out:\"$PROJECT_DIR/build/redin\"
     (when-not existing?
       (println (str "  cd " name)))
     (println "  ./redinw --dev main.lua")
+    (println "  Docs: .redin/docs/")
     (println)))
 
 (defn cmd-upgrade-to-native []

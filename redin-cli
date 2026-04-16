@@ -266,7 +266,7 @@ odin build \"$SCRIPT_DIR\" -out:\"$PROJECT_DIR/build/redin\"
 ;; Shared
 ;; ---------------------------------------------------------------------------
 
-(def gitignore-content ".redin/\nskills/\n")
+(def gitignore-content ".redin/\n.redin-port\n")
 
 ;; ---------------------------------------------------------------------------
 ;; Commands
@@ -290,9 +290,9 @@ odin build \"$SCRIPT_DIR\" -out:\"$PROJECT_DIR/build/redin\"
   (let [gi (io/file dir ".gitignore")]
     (when-not (.exists gi)
       (spit gi gitignore-content)))
-  ;; Copy skills from .redin/ into project root
+  ;; Copy skills from .redin/ into .claude/skills/
   (let [skills-src (io/file dir ".redin/skills")
-        skills-dst (io/file dir "skills")]
+        skills-dst (io/file dir ".claude/skills")]
     (when (.exists skills-src)
       (copy-tree skills-src skills-dst))))
 
@@ -326,7 +326,7 @@ odin build \"$SCRIPT_DIR\" -out:\"$PROJECT_DIR/build/redin\"
     (println "Done!")
     (println "  ./redinw --dev main.fnl")
     (println "  Docs:  .redin/docs/")
-    (println "  Skill: skills/redin-dev/  (Claude Code)")
+    (println "  Skill: .claude/skills/redin-dev/  (Claude Code)")
     (println)))
 
 (defn cmd-new-lua [name]
@@ -359,7 +359,7 @@ odin build \"$SCRIPT_DIR\" -out:\"$PROJECT_DIR/build/redin\"
     (println "Done!")
     (println "  ./redinw --dev main.lua")
     (println "  Docs:  .redin/docs/")
-    (println "  Skill: skills/redin-dev/  (Claude Code)")
+    (println "  Skill: .claude/skills/redin-dev/  (Claude Code)")
     (println)))
 
 (defn cmd-upgrade-to-native []
@@ -505,14 +505,14 @@ odin build \"$SCRIPT_DIR\" -out:\"$PROJECT_DIR/build/redin\"
   (println "Project structure:")
   (println "  .redin/           Pinned redin binary + runtime (gitignored)")
   (println "  .redin/docs/      API docs, guides, references")
-  (println "  skills/           Claude Code skill for redin development")
+  (println "  .claude/skills/   Claude Code skill for redin development")
   (println "  redinw            Wrapper script (committed to git)")
   (println)
   (println "After creating a project:")
   (println "  ./redinw --dev main.fnl       Run with dev server + hot reload")
   (println "  ./redinw main.fnl             Run without dev server")
   (println)
-  (println "Dev server (--dev mode, http://localhost:8800):")
+  (println "Dev server (--dev mode, http://localhost:$(cat .redin-port), default 8800):")
   (println "  GET  /frames                  View tree as JSON")
   (println "  GET  /state                   Full app state")
   (println "  GET  /state/path.to.value     Nested state lookup")

@@ -259,7 +259,10 @@ init_providers :: proc() {
 SCRIPT_DIR=\"$(cd \"$(dirname \"$0\")\" && pwd)\"
 PROJECT_DIR=\"$(dirname \"$SCRIPT_DIR\")\"
 mkdir -p \"$PROJECT_DIR/build\"
-odin build \"$SCRIPT_DIR\" -out:\"$PROJECT_DIR/build/redin\"
+odin build \"$SCRIPT_DIR\" \\
+  -collection:lib=\"$SCRIPT_DIR/lib\" \\
+  -collection:luajit=\"$SCRIPT_DIR/vendor/luajit\" \\
+  -out:\"$PROJECT_DIR/build/redin\"
 ")
 
 ;; ---------------------------------------------------------------------------
@@ -395,6 +398,8 @@ odin build \"$SCRIPT_DIR\" -out:\"$PROJECT_DIR/build/redin\"
             (System/exit 1)))
 
         ;; Copy src/ and vendor/ into .redin/
+        ;; (lib/ is not in the source tarball — it's a submodule — so rely on
+        ;; the release tarball placing lib/ under .redin/lib/.)
         (doseq [subdir ["src" "vendor"]]
           (let [src (io/file tmp-dir subdir)
                 dst (io/file ".redin" subdir)]
@@ -437,6 +442,32 @@ odin build \"$SCRIPT_DIR\" -out:\"$PROJECT_DIR/build/redin\"
                         (not= (.getName target) "providers.odin"))
                 (.mkdirs (.getParentFile target))
                 (io/copy f target)))))))
+
+    ;; Copy dependencies into native/ so the relocated build can link them.
+    ;; Two collections:
+    ;;   -collection:lib=native/lib               (odin-http)
+    ;;   -collection:luajit=native/vendor/luajit  (libluajit-5.1.a)
+    (doseq [[label src-path dst-path] [["lib/"          ".redin/lib"          "lib"]
+                                        ["vendor/luajit/" ".redin/vendor/luajit" "vendor/luajit"]]]
+      (let [src (io/file src-path)
+            dst (io/file native-dir dst-path)]
+        (if (.exists src)
+          (do
+            (println (str "  Copying " label " into native/" dst-path "/..."))
+            ;; Wipe old dst so stale files can't linger
+            (when (.exists dst)
+              (doseq [f (reverse (file-seq dst))]
+                (.delete f)))
+            (doseq [f (file-seq src)]
+              (let [rel (.relativize (.toPath src) (.toPath f))
+                    target (io/file dst (.toString rel))]
+                (if (.isDirectory f)
+                  (.mkdirs target)
+                  (do (.mkdirs (.getParentFile target))
+                      (io/copy f target))))))
+          (do
+            (println (str "  WARNING: " src-path " not found — native build will fail."))
+            (println "           Run `redin-cli update` to fetch a release that bundles it.")))))
 
     ;; Write providers.odin if it doesn't exist
     (let [providers-file (io/file native-dir "providers.odin")]

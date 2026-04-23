@@ -1,0 +1,97 @@
+name: smoke
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    # Weekly Monday 08:00 UTC — catches regressions introduced by a
+    # new redin release even when this repo hasn't changed.
+    - cron: '0 8 * * 1'
+
+jobs:
+  upgrade-to-native:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y luajit libssl-dev \
+            libgl1-mesa-dev libx11-dev libxrandr-dev libxi-dev \
+            libxcursor-dev libxinerama-dev \
+            xvfb curl
+
+      - name: Install Babashka
+        uses: DeLaGuardo/setup-clojure@13.0
+        with:
+          bb: latest
+
+      - name: Install Odin
+        uses: laytan/setup-odin@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Make redin-cli available on PATH
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          install -m 0755 redin-cli "$HOME/.local/bin/redin-cli"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Scaffold project + upgrade to native
+        run: |
+          mkdir -p /tmp/smoke-app
+          cd /tmp/smoke-app
+          redin-cli new-fnl .
+          redin-cli upgrade-to-native
+          ls native/ native/lib/ native/vendor/luajit/lib/ | head
+          cat native/build.sh
+
+      - name: Build native binary
+        run: |
+          cd /tmp/smoke-app/native
+          ./build.sh
+          ls -la /tmp/smoke-app/build/redin
+
+      - name: Smoke check — sentinel must appear in /frames
+        # Replaces main.fnl with one that renders a sentinel string, then
+        # launches the native binary under xvfb and asserts /frames echoes
+        # the sentinel back. Returning 200 from /state is NOT enough — the
+        # dev server comes up independently of Fennel loading.
+        run: |
+          cd /tmp/smoke-app
+          cat > main.fnl <<'FNL'
+          (global main_view (fn [] [:text {} "redin-cli-smoke-ok"]))
+          FNL
+          rm -f .redin-port .redin-token
+          xvfb-run -a -s "-screen 0 1280x800x24" ./build/redin --dev main.fnl &
+          PID=$!
+          TIMEOUT=30
+          ok=0
+          for _ in $(seq 1 "$TIMEOUT"); do
+            if [ -f .redin-port ] && [ -f .redin-token ]; then
+              PORT="$(cat .redin-port)"; TOKEN="$(cat .redin-token)"
+              body="$(curl -sf -H "Authorization: Bearer $TOKEN" \
+                           "http://localhost:$PORT/frames" 2>/dev/null || true)"
+              if printf '%s' "$body" | grep -q 'redin-cli-smoke-ok'; then
+                echo "  /frames contains sentinel — PASSED"
+                ok=1
+                break
+              fi
+            fi
+            if ! kill -0 "$PID" 2>/dev/null; then
+              echo "ERROR: native binary exited before smoke check completed" >&2
+              exit 1
+            fi
+            sleep 1
+          done
+
+          if [ -n "${PORT:-}" ] && [ -n "${TOKEN:-}" ]; then
+            curl -s -X POST -H "Authorization: Bearer $TOKEN" \
+              "http://localhost:$PORT/shutdown" >/dev/null || true
+          fi
+          kill "$PID" 2>/dev/null || true
+          wait "$PID" 2>/dev/null || true
+          [ "$ok" -eq 1 ] || { echo "ERROR: sentinel never appeared in /frames"; exit 1; }

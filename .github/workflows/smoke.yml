@@ -49,6 +49,26 @@ jobs:
           ls native/ native/lib/ native/vendor/luajit/lib/ | head
           cat native/build.sh
 
+      - name: Smoke check — .claude/skills/ populated on scaffold and update
+        # Regression guard for sstoehrm/redin#73: scaffold must drop the
+        # skill in .claude/skills/ (where Claude Code looks), and `update`
+        # must self-heal projects whose .claude/skills/ is missing — pre-fix
+        # scaffolds wrote to skills/ instead, and plain install-release
+        # alone doesn't move it.
+        run: |
+          cd /tmp/smoke-app
+          test -f .claude/skills/redin-dev/SKILL.md || {
+            echo "ERROR: scaffold did not create .claude/skills/redin-dev/SKILL.md"
+            exit 1
+          }
+          rm -rf .claude/skills
+          redin-cli update
+          test -f .claude/skills/redin-dev/SKILL.md || {
+            echo "ERROR: redin-cli update did not restore .claude/skills/redin-dev/SKILL.md"
+            exit 1
+          }
+          echo "  PASSED — .claude/skills/ populated on both scaffold and update"
+
       - name: Build native binary
         run: |
           cd /tmp/smoke-app/native

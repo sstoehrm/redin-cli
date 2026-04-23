@@ -284,6 +284,22 @@ odin build \"$SCRIPT_DIR\" \\
         (do (.mkdirs (.getParentFile target))
             (io/copy f target))))))
 
+(defn refresh-claude-skills [dir]
+  ;; Mirror .redin/skills/ into .claude/skills/ (where Claude Code actually
+  ;; looks). Framework skill dirs are wiped before copy so renames or
+  ;; removals in a new release don't leave orphan files behind; sibling
+  ;; user-authored skills in .claude/skills/ are untouched.
+  (let [skills-src (io/file dir ".redin/skills")
+        skills-dst (io/file dir ".claude/skills")]
+    (when (.exists skills-src)
+      (doseq [skill-dir (.listFiles skills-src)
+              :when (.isDirectory skill-dir)]
+        (let [target (io/file skills-dst (.getName skill-dir))]
+          (when (.exists target)
+            (doseq [f (reverse (file-seq target))]
+              (.delete f)))))
+      (copy-tree skills-src skills-dst))))
+
 (defn scaffold-common [dir]
   ;; redinw
   (let [wrapper (io/file dir "redinw")]
@@ -293,11 +309,7 @@ odin build \"$SCRIPT_DIR\" \\
   (let [gi (io/file dir ".gitignore")]
     (when-not (.exists gi)
       (spit gi gitignore-content)))
-  ;; Copy skills from .redin/ into .claude/skills/
-  (let [skills-src (io/file dir ".redin/skills")
-        skills-dst (io/file dir ".claude/skills")]
-    (when (.exists skills-src)
-      (copy-tree skills-src skills-dst))))
+  (refresh-claude-skills dir))
 
 (defn cmd-new-fnl [name]
   (when (or (nil? name) (str/blank? name))
@@ -515,8 +527,13 @@ odin build \"$SCRIPT_DIR\" \\
       (println (str "Already on " version))
       (do
         (println (str "Updating from " current " to " version))
-        (install-release "." version)
-        (println "Done!")))))
+        (install-release "." version)))
+    ;; Always refresh .claude/skills/ — this is where Claude Code looks.
+    ;; Projects scaffolded before the skill location was standardized
+    ;; (see sstoehrm/redin#73) don't have it, and won't get it from
+    ;; install-release alone, so self-heal on every update.
+    (refresh-claude-skills (io/file "."))
+    (println "Done!")))
 
 (defn cmd-latest []
   (let [version (fetch-latest-version)]

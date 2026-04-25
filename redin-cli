@@ -231,38 +231,90 @@ end
 ")
 
 ;; ---------------------------------------------------------------------------
-;; Templates: Native (upgrade-to-native)
+;; Templates: Native (RFC sstoehrm/redin#79)
 ;; ---------------------------------------------------------------------------
+;; The user owns app.odin at the project root and imports redin from the
+;; framework directory `.redin/src/redin/`. Custom canvas providers, Lua
+;; cfuncs, and per-frame hooks are registered before redin.run takes over
+;; the loop. Nothing in .redin/ is hand-edited — `redin-cli update`
+;; freely overwrites it.
 
-(def providers-odin
-  "package host
+(def app-odin-fnl
+  "package main
 
-import \"canvas\"
-import rl \"vendor:raylib\"
+import \"core:os\"
+import redin \"./.redin/src/redin\"
 
-// Example: register a native Odin canvas provider.
-// Reference it from Fennel/Lua with [:canvas {:provider :my-provider ...}]
+main :: proc() {
+\tcfg: redin.Config
+\tcfg.app = \"main.fnl\"
+\tfor arg in os.args[1:] {
+\t\tswitch arg {
+\t\tcase \"--dev\":     cfg.dev = true
+\t\tcase \"--profile\": cfg.profile = true
+\t\tcase:             cfg.app = arg
+\t\t}
+\t}
 
-my_provider := canvas.Canvas_Provider{
-\tupdate = proc(rect: rl.Rectangle) {
-\t\trl.DrawRectangleRec(rect, rl.Color{40, 40, 60, 255})
-\t},
-}
+\t// Register custom canvas providers / Lua cfuncs / hooks before run.
+\t//
+\t// import \"./.redin/src/redin/canvas\"
+\t// import \"./.redin/src/redin/bridge\"
+\t//
+\t// canvas.register(\"my-provider\", my_provider)
+\t// bridge.register_cfunc(\"my_signal\", my_cfunc)
+\t// redin.on_frame(my_per_frame_tick)
+\t//
+\t// redin.set_window(1920, 1080, \"my game\", {.WINDOW_RESIZABLE})
 
-init_providers :: proc() {
-\tcanvas.register(\"my-provider\", my_provider)
+\tredin.run(cfg)
 }
 ")
 
-(def build-sh
+(def app-odin-lua
+  "package main
+
+import \"core:os\"
+import redin \"./.redin/src/redin\"
+
+main :: proc() {
+\tcfg: redin.Config
+\tcfg.app = \"main.lua\"
+\tfor arg in os.args[1:] {
+\t\tswitch arg {
+\t\tcase \"--dev\":     cfg.dev = true
+\t\tcase \"--profile\": cfg.profile = true
+\t\tcase:             cfg.app = arg
+\t\t}
+\t}
+
+\tredin.run(cfg)
+}
+")
+
+(def build-sh-native
   "#!/usr/bin/env bash
 SCRIPT_DIR=\"$(cd \"$(dirname \"$0\")\" && pwd)\"
-PROJECT_DIR=\"$(dirname \"$SCRIPT_DIR\")\"
-mkdir -p \"$PROJECT_DIR/build\"
+mkdir -p \"$SCRIPT_DIR/build\"
 odin build \"$SCRIPT_DIR\" \\
-  -collection:lib=\"$SCRIPT_DIR/lib\" \\
-  -collection:luajit=\"$SCRIPT_DIR/vendor/luajit\" \\
-  -out:\"$PROJECT_DIR/build/redin\"
+  -collection:lib=\"$SCRIPT_DIR/.redin/lib\" \\
+  -collection:luajit=\"$SCRIPT_DIR/.redin/vendor/luajit\" \\
+  -out:\"$SCRIPT_DIR/build/redin\"
+")
+
+(def legacy-native-message
+  "ERROR: This project uses the old native layout (native/ directory).
+
+The native build now lives at the project root (app.odin) and imports
+redin as a package from .redin/src/redin/. Migrate by:
+
+  1. Save any custom code from native/providers.odin and edits to
+     native/main.odin (window size, registered providers, cfuncs).
+  2. rm -rf native/
+  3. Re-run: redin-cli new-fnl --native .
+  4. Open the freshly scaffolded app.odin and re-apply your customizations.
+
+Your main.fnl / main.lua and other project files are untouched.
 ")
 
 ;; ---------------------------------------------------------------------------
@@ -311,209 +363,200 @@ odin build \"$SCRIPT_DIR\" \\
       (spit gi gitignore-content)))
   (refresh-claude-skills dir))
 
-(defn cmd-new-fnl [name]
-  (when (or (nil? name) (str/blank? name))
-    (println "Usage: redin-cli new-fnl <project-name>")
-    (System/exit 1))
+(defn detect-legacy-native [dir]
+  ;; If the project has the pre-RFC-79 native/ layout, refuse to scaffold
+  ;; over it. Print migration instructions and exit.
+  (when (.exists (io/file dir "native"))
+    (println legacy-native-message)
+    (System/exit 1)))
 
-  (let [dir (io/file name)]
-    (if (.exists dir)
-      (println (str "Installing redin into " name))
-      (do
-        (println (str "Creating Fennel redin project: " name))
-        (.mkdirs dir)))
+(defn fetch-source [dir version]
+  ;; Download the source tarball for `version` and copy src/ + vendor/
+  ;; into <dir>/.redin/. Idempotent: replaces any existing src/ and
+  ;; vendor/ contents under .redin/. lib/ is not in the source tarball
+  ;; (it's a submodule) — install-release places it under .redin/lib/.
+  (println (str "Fetching redin source (" version ")..."))
+  (let [release (fetch-release-info version)
+        source-url (find-source-tarball-url release)
+        tarball (io/file dir ".redin-source.tar.gz")]
+    (when-not source-url
+      (println "ERROR: No source tarball found for this release.")
+      (System/exit 1))
+    (download-file source-url (.getPath tarball))
 
-    (let [version (fetch-latest-version)]
-      (println (str "Latest version: " version))
-      (install-release (.getPath dir) version))
+    (println "  Extracting source...")
+    (let [tmp-dir (io/file dir ".redin-source-tmp")]
+      (.mkdirs tmp-dir)
+      (let [exit (-> (ProcessBuilder. ["tar" "xzf" (.getAbsolutePath tarball)
+                                        "-C" (.getAbsolutePath tmp-dir)
+                                        "--strip-components=1"])
+                     .start
+                     .waitFor)]
+        (when (not= exit 0)
+          (println "  ERROR: source extraction failed")
+          (System/exit 1)))
 
-    (scaffold-common dir)
-
-    ;; Write starter files if they don't exist yet
-    (let [main-file (io/file dir "main.fnl")]
-      (when-not (.exists main-file)
-        (spit main-file main-fnl)))
-    (let [fls-file (io/file dir "flsproject.fnl")]
-      (when-not (.exists fls-file)
-        (spit fls-file flsproject-fnl)))
-
-    (println)
-    (println "Done!")
-    (println "  ./redinw --dev main.fnl")
-    (println "  Docs:  .redin/docs/")
-    (println "  Skill: .claude/skills/redin-dev/  (Claude Code)")
-    (println)))
-
-(defn cmd-new-lua [name]
-  (when (or (nil? name) (str/blank? name))
-    (println "Usage: redin-cli new-lua <project-name>")
-    (System/exit 1))
-
-  (let [dir (io/file name)]
-    (if (.exists dir)
-      (println (str "Installing redin into " name))
-      (do
-        (println (str "Creating Lua redin project: " name))
-        (.mkdirs dir)))
-
-    (let [version (fetch-latest-version)]
-      (println (str "Latest version: " version))
-      (install-release (.getPath dir) version))
-
-    (scaffold-common dir)
-
-    ;; Write starter files if they don't exist yet
-    (let [main-file (io/file dir "main.lua")]
-      (when-not (.exists main-file)
-        (spit main-file main-lua)))
-    (let [luarc-file (io/file dir ".luarc.json")]
-      (when-not (.exists luarc-file)
-        (spit luarc-file luarc-json)))
-
-    (println)
-    (println "Done!")
-    (println "  ./redinw --dev main.lua")
-    (println "  Docs:  .redin/docs/")
-    (println "  Skill: .claude/skills/redin-dev/  (Claude Code)")
-    (println)))
-
-(defn cmd-upgrade-to-native []
-  (when-not (.exists (io/file ".redin"))
-    (println "Not a redin project (no .redin/ directory).")
-    (println "Run this from your project root.")
-    (System/exit 1))
-
-  (let [version (str/trim (slurp ".redin/version"))
-        native-dir (io/file "native")]
-
-    ;; Download source into .redin/
-    (println (str "Fetching redin source (" version ")..."))
-    (let [release (fetch-release-info version)
-          source-url (find-source-tarball-url release)
-          tarball (io/file ".redin-source.tar.gz")]
-      (when-not source-url
-        (println "ERROR: No source tarball found for this release.")
-        (System/exit 1))
-      (download-file source-url (.getPath tarball))
-
-      ;; Extract source into temp dir, then copy src/ and vendor/
-      (println "  Extracting source...")
-      (let [tmp-dir (io/file ".redin-source-tmp")]
-        (.mkdirs tmp-dir)
-        (let [exit (-> (ProcessBuilder. ["tar" "xzf" (.getAbsolutePath tarball)
-                                         "-C" (.getAbsolutePath tmp-dir)
-                                         "--strip-components=1"])
-                       .start
-                       .waitFor)]
-          (when (not= exit 0)
-            (println "  ERROR: source extraction failed")
-            (System/exit 1)))
-
-        ;; Copy src/ and vendor/ into .redin/
-        ;; (lib/ is not in the source tarball — it's a submodule — so rely on
-        ;; the release tarball placing lib/ under .redin/lib/.)
-        (doseq [subdir ["src" "vendor"]]
-          (let [src (io/file tmp-dir subdir)
-                dst (io/file ".redin" subdir)]
-            (when (.exists src)
-              ;; Remove old
-              (when (.exists dst)
-                (doseq [f (reverse (file-seq dst))]
-                  (when (not= f dst) (.delete f))))
-              ;; Copy
-              (doseq [f (file-seq src)]
-                (let [rel (.relativize (.toPath src) (.toPath f))
-                      target (io/file dst (.toString rel))]
-                  (if (.isDirectory f)
-                    (.mkdirs target)
-                    (do (.mkdirs (.getParentFile target))
-                        (io/copy f target))))))))
-
-        ;; Cleanup
-        (doseq [f (reverse (file-seq tmp-dir))]
-          (.delete f))
-        (.delete tarball)))
-
-    ;; Create native/ directory
-    (if (.exists native-dir)
-      (println "  native/ already exists, preserving user files")
-      (.mkdirs native-dir))
-
-    ;; Copy host source into native/
-    (let [host-src (io/file ".redin/src/host")]
-      (when (.exists host-src)
-        (println "  Copying host source into native/...")
-        (doseq [f (file-seq host-src)]
-          (let [rel (.relativize (.toPath host-src) (.toPath f))
-                target (io/file native-dir (.toString rel))]
-            (if (.isDirectory f)
-              (.mkdirs target)
-              ;; Don't overwrite user-created files not in framework
-              (when (or (not (.exists target))
-                        ;; Always update framework files
-                        (not= (.getName target) "providers.odin"))
-                (.mkdirs (.getParentFile target))
-                (io/copy f target)))))))
-
-    ;; Copy dependencies into native/ so the relocated build can link them.
-    ;; Two collections:
-    ;;   -collection:lib=native/lib               (odin-http)
-    ;;   -collection:luajit=native/vendor/luajit  (libluajit-5.1.a)
-    (doseq [[label src-path dst-path] [["lib/"          ".redin/lib"          "lib"]
-                                        ["vendor/luajit/" ".redin/vendor/luajit" "vendor/luajit"]]]
-      (let [src (io/file src-path)
-            dst (io/file native-dir dst-path)]
-        (if (.exists src)
-          (do
-            (println (str "  Copying " label " into native/" dst-path "/..."))
-            ;; Wipe old dst so stale files can't linger
+      ;; Replace src/ and vendor/ inside .redin/ with the freshly
+      ;; extracted versions.
+      (doseq [subdir ["src" "vendor"]]
+        (let [src (io/file tmp-dir subdir)
+              dst (io/file dir ".redin" subdir)]
+          (when (.exists src)
             (when (.exists dst)
               (doseq [f (reverse (file-seq dst))]
-                (.delete f)))
+                (when (not= f dst) (.delete f))))
             (doseq [f (file-seq src)]
               (let [rel (.relativize (.toPath src) (.toPath f))
                     target (io/file dst (.toString rel))]
                 (if (.isDirectory f)
                   (.mkdirs target)
                   (do (.mkdirs (.getParentFile target))
-                      (io/copy f target))))))
-          (do
-            (println (str "  WARNING: " src-path " not found — native build will fail."))
-            (println "           Run `redin-cli update` to fetch a release that bundles it.")))))
+                      (io/copy f target))))))))
 
-    ;; Write providers.odin if it doesn't exist
-    (let [providers-file (io/file native-dir "providers.odin")]
-      (when-not (.exists providers-file)
-        (spit providers-file providers-odin)))
+      ;; Cleanup
+      (doseq [f (reverse (file-seq tmp-dir))]
+        (.delete f))
+      (.delete tarball))))
 
-    ;; Inject init_providers() into main.odin if not already present
-    (let [main-file (io/file native-dir "main.odin")
-          content (slurp main-file)]
-      (when-not (str/includes? content "init_providers")
-        (spit main-file
-              (str/replace content
-                           "bridge.load_app(&b, app_file)"
-                           "bridge.load_app(&b, app_file)\n\n\t// Register custom canvas providers\n\tinit_providers()"))))
+(defn scaffold-native [dir kind]
+  ;; kind: :fennel or :lua. Drops app.odin (with the right starter) and
+  ;; build.sh at project root, switches redinw to the native variant
+  ;; (prefer build/redin if present, else .redin/redin), and adds build/
+  ;; to .gitignore.
+  (let [app-content (case kind :fennel app-odin-fnl :lua app-odin-lua)
+        app-file    (io/file dir "app.odin")
+        build-file  (io/file dir "build.sh")
+        redinw-file (io/file dir "redinw")
+        gi-file     (io/file dir ".gitignore")]
 
-    ;; Write build.sh
-    (let [bs (io/file native-dir "build.sh")]
-      (spit bs build-sh)
-      (.setExecutable bs true))
+    (when-not (.exists app-file)
+      (spit app-file app-content))
 
-    ;; Update redinw to prefer native build
-    (spit "redinw" redinw-native-script)
-    (.setExecutable (io/file "redinw") true)
+    (spit build-file build-sh-native)
+    (.setExecutable build-file true)
 
-    ;; Update .gitignore
-    (let [gi (slurp ".gitignore")]
-      (when-not (str/includes? gi "build/")
-        (spit ".gitignore" (str gi "build/\n"))))
+    (spit redinw-file redinw-native-script)
+    (.setExecutable redinw-file true)
+
+    (when (.exists gi-file)
+      (let [content (slurp gi-file)]
+        (when-not (str/includes? content "build/")
+          (spit gi-file (str content "build/\n")))))))
+
+(defn parse-new-args [args usage]
+  ;; Pull --native flag out of `args`; the remainder is positional.
+  ;; Returns {:native? bool :name string-or-nil}.
+  (let [native? (boolean (some #{"--native"} args))
+        positional (remove #{"--native"} args)
+        name (first positional)]
+    (when (or (nil? name) (str/blank? name))
+      (println usage)
+      (System/exit 1))
+    {:native? native? :name name}))
+
+(defn cmd-new-fnl [args]
+  (let [{:keys [native? name]}
+        (parse-new-args args "Usage: redin-cli new-fnl [--native] <project-name>")
+        dir (io/file name)]
+
+    (if (.exists dir)
+      (println (str "Installing redin into " name))
+      (do
+        (println (str "Creating Fennel redin project: " name))
+        (.mkdirs dir)))
+
+    (when native?
+      (detect-legacy-native dir))
+
+    (let [version (fetch-latest-version)]
+      (println (str "Latest version: " version))
+      (install-release (.getPath dir) version)
+
+      (scaffold-common dir)
+
+      ;; Starter files
+      (let [main-file (io/file dir "main.fnl")]
+        (when-not (.exists main-file)
+          (spit main-file main-fnl)))
+      (let [fls-file (io/file dir "flsproject.fnl")]
+        (when-not (.exists fls-file)
+          (spit fls-file flsproject-fnl)))
+
+      (when native?
+        (fetch-source dir version)
+        (scaffold-native dir :fennel)))
 
     (println)
-    (println "Done! Native development ready.")
-    (println "  cd native && ./build.sh    # build custom binary")
-    (println "  ./redinw --dev main.fnl    # runs native build if available")
+    (println "Done!")
+    (if native?
+      (do
+        (println "  ./build.sh                    # build native binary")
+        (println "  ./redinw --dev main.fnl       # runs build/redin if present"))
+      (println "  ./redinw --dev main.fnl"))
+    (println "  Docs:  .redin/docs/")
+    (println "  Skill: .claude/skills/redin-dev/  (Claude Code)")
     (println)))
+
+(defn cmd-new-lua [args]
+  (let [{:keys [native? name]}
+        (parse-new-args args "Usage: redin-cli new-lua [--native] <project-name>")
+        dir (io/file name)]
+
+    (if (.exists dir)
+      (println (str "Installing redin into " name))
+      (do
+        (println (str "Creating Lua redin project: " name))
+        (.mkdirs dir)))
+
+    (when native?
+      (detect-legacy-native dir))
+
+    (let [version (fetch-latest-version)]
+      (println (str "Latest version: " version))
+      (install-release (.getPath dir) version)
+
+      (scaffold-common dir)
+
+      ;; Starter files
+      (let [main-file (io/file dir "main.lua")]
+        (when-not (.exists main-file)
+          (spit main-file main-lua)))
+      (let [luarc-file (io/file dir ".luarc.json")]
+        (when-not (.exists luarc-file)
+          (spit luarc-file luarc-json)))
+
+      (when native?
+        (fetch-source dir version)
+        (scaffold-native dir :lua)))
+
+    (println)
+    (println "Done!")
+    (if native?
+      (do
+        (println "  ./build.sh                    # build native binary")
+        (println "  ./redinw --dev main.lua       # runs build/redin if present"))
+      (println "  ./redinw --dev main.lua"))
+    (println "  Docs:  .redin/docs/")
+    (println "  Skill: .claude/skills/redin-dev/  (Claude Code)")
+    (println)))
+
+(defn cmd-upgrade-to-native []
+  ;; Deprecated alias for `redin-cli new-fnl --native .` (or new-lua if
+  ;; main.lua exists). Removed in a future release. See sstoehrm/redin#79.
+  (println "DEPRECATED: `redin-cli upgrade-to-native` is deprecated.")
+  (println "            Use `redin-cli new-fnl --native .` (or `new-lua --native .`)")
+  (println "            See sstoehrm/redin#79 for the new layout.")
+  (println)
+
+  (when-not (.exists (io/file ".redin"))
+    (println "Not a redin project (no .redin/ directory).")
+    (println "Run this from your project root.")
+    (System/exit 1))
+
+  (let [lua? (.exists (io/file "main.lua"))]
+    (if lua?
+      (cmd-new-lua ["--native" "."])
+      (cmd-new-fnl ["--native" "."]))))
 
 (defn cmd-update [version-arg]
   (when-not (.exists (io/file ".redin"))
@@ -543,18 +586,24 @@ odin build \"$SCRIPT_DIR\" \\
   (println "redin-cli — redin project manager")
   (println)
   (println "Commands:")
-  (println "  redin-cli new-fnl <name>      Create a Fennel redin project")
-  (println "  redin-cli new-lua <name>      Create a Lua redin project")
-  (println "  redin-cli upgrade-to-native   Add Odin source for native canvas providers")
-  (println "  redin-cli update [version]    Update redin to latest or specified version")
-  (println "  redin-cli latest              Print latest available version")
-  (println "  redin-cli help                Show this help")
+  (println "  redin-cli new-fnl [--native] <name>   Create a Fennel redin project")
+  (println "  redin-cli new-lua [--native] <name>   Create a Lua redin project")
+  (println "  redin-cli update [version]            Update redin to latest or specified version")
+  (println "  redin-cli latest                      Print latest available version")
+  (println "  redin-cli help                        Show this help")
+  (println)
+  (println "  --native:  scaffold app.odin + build.sh at project root for")
+  (println "             native Odin development (custom canvas providers,")
+  (println "             Lua cfuncs, hooks). User owns app.odin; redin lives")
+  (println "             at .redin/src/redin/ and is overwritten by `update`.")
   (println)
   (println "Project structure:")
-  (println "  .redin/           Pinned redin binary + runtime (gitignored)")
+  (println "  .redin/           Pinned redin binary + runtime + source (gitignored)")
   (println "  .redin/docs/      API docs, guides, references")
   (println "  .claude/skills/   Claude Code skill for redin development")
   (println "  redinw            Wrapper script (committed to git)")
+  (println "  app.odin          (--native only) User-owned entry point")
+  (println "  build.sh          (--native only) Native build script")
   (println)
   (println "After creating a project:")
   (println "  ./redinw --dev main.fnl       Run with dev server + hot reload")
@@ -578,12 +627,13 @@ odin build \"$SCRIPT_DIR\" \\
 ;; ---------------------------------------------------------------------------
 
 (let [args *command-line-args*
-      cmd (first args)]
+      cmd (first args)
+      rest-args (vec (rest args))]
   (case cmd
-    "new-fnl"           (cmd-new-fnl (second args))
-    "new-lua"           (cmd-new-lua (second args))
+    "new-fnl"           (cmd-new-fnl rest-args)
+    "new-lua"           (cmd-new-lua rest-args)
     "upgrade-to-native" (cmd-upgrade-to-native)
-    "update"            (cmd-update (second args))
+    "update"            (cmd-update (first rest-args))
     "latest"            (cmd-latest)
     "help"              (cmd-help)
     (do

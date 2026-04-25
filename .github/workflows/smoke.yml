@@ -11,7 +11,7 @@ on:
     - cron: '0 8 * * 1'
 
 jobs:
-  upgrade-to-native:
+  new-fnl-native:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -40,21 +40,21 @@ jobs:
           install -m 0755 redin-cli "$HOME/.local/bin/redin-cli"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
-      - name: Scaffold project + upgrade to native
+      - name: Scaffold native project (new-fnl --native)
         run: |
           mkdir -p /tmp/smoke-app
           cd /tmp/smoke-app
-          redin-cli new-fnl .
-          redin-cli upgrade-to-native
-          ls native/ native/lib/ native/vendor/luajit/lib/ | head
-          cat native/build.sh
+          redin-cli new-fnl --native .
+          ls -la
+          test -f app.odin     || { echo "ERROR: app.odin missing";  exit 1; }
+          test -f build.sh     || { echo "ERROR: build.sh missing";  exit 1; }
+          test -d .redin/src/redin || { echo "ERROR: .redin/src/redin/ missing"; exit 1; }
+          cat build.sh
 
       - name: Smoke check — .claude/skills/ populated on scaffold and update
         # Regression guard for sstoehrm/redin#73: scaffold must drop the
         # skill in .claude/skills/ (where Claude Code looks), and `update`
-        # must self-heal projects whose .claude/skills/ is missing — pre-fix
-        # scaffolds wrote to skills/ instead, and plain install-release
-        # alone doesn't move it.
+        # must self-heal projects whose .claude/skills/ is missing.
         run: |
           cd /tmp/smoke-app
           test -f .claude/skills/redin-dev/SKILL.md || {
@@ -69,11 +69,39 @@ jobs:
           }
           echo "  PASSED — .claude/skills/ populated on both scaffold and update"
 
-      - name: Build native binary
+      - name: Smoke check — legacy native/ layout is rejected with migration message
+        # Regression guard for sstoehrm/redin#79: scaffolding into a project
+        # that already has the old native/ directory must bail with the
+        # migration message instead of clobbering things.
+        #
+        # Capture the exit code directly — piping into `tee` would mask
+        # redin-cli's non-zero status behind tee's zero. (`set -o pipefail`
+        # would also work but the explicit form is clearer.)
         run: |
-          cd /tmp/smoke-app/native
+          cd /tmp/smoke-app
+          mkdir -p legacy-test/native
+          cd legacy-test
+          set +e
+          redin-cli new-fnl --native . > out.log 2>&1
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ]; then
+            echo "ERROR: redin-cli should have exited non-zero with native/ present"
+            cat out.log
+            exit 1
+          fi
+          grep -q "old native layout" out.log || {
+            echo "ERROR: migration message not present in output"
+            cat out.log
+            exit 1
+          }
+          echo "  PASSED — legacy native/ rejected"
+
+      - name: Build native binary (project root)
+        run: |
+          cd /tmp/smoke-app
           ./build.sh
-          ls -la /tmp/smoke-app/build/redin
+          ls -la build/redin
 
       - name: Smoke check — sentinel must appear in /frames
         # Replaces main.fnl with one that renders a sentinel string, then

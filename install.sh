@@ -12,7 +12,9 @@ if ! command -v bb &> /dev/null; then
 fi
 
 mkdir -p "$INSTALL_DIR"
-curl -sL "https://raw.githubusercontent.com/$REPO/main/redin-cli" -o "$INSTALL_DIR/redin-cli"
+# -f: fail on HTTP errors instead of saving the error page as the executable;
+# --retry: ride out transient CDN failures (a Fastly 503 once shipped as a "binary").
+curl -fsSL --retry 3 "https://raw.githubusercontent.com/$REPO/main/redin-cli" -o "$INSTALL_DIR/redin-cli"
 chmod +x "$INSTALL_DIR/redin-cli"
 
 echo "Installed redin-cli to $INSTALL_DIR/redin-cli"

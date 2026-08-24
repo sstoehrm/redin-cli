@@ -24,12 +24,14 @@
         data (json/decode (:body resp) true)]
     data))
 
-(defn find-tarball-url [release]
-  (let [assets (:assets release)]
-    (->> assets
-         (filter #(str/ends-with? (:name %) "-linux-amd64.tar.gz"))
-         first
-         :browser_download_url)))
+(defn find-asset-url [release asset-name]
+  ;; Exact-name match. Releases also ship variant bundles (e.g.
+  ;; redin-vX-agent-linux-amd64.tar.gz) that share the -linux-amd64.tar.gz
+  ;; suffix, so a suffix filter can pick the wrong asset.
+  (->> (:assets release)
+       (filter #(= (:name %) asset-name))
+       first
+       :browser_download_url))
 
 (defn find-source-tarball-url [release]
   (:tarball_url release))
@@ -39,28 +41,77 @@
   (let [resp (http/get url {:as :stream})]
     (io/copy (:body resp) (io/file dest))))
 
+(defn sha256-hex [file]
+  (let [md (java.security.MessageDigest/getInstance "SHA-256")]
+    (with-open [in (io/input-stream file)]
+      (let [buf (byte-array 65536)]
+        (loop []
+          (let [n (.read in buf)]
+            (when (pos? n)
+              (.update md buf 0 n)
+              (recur))))))
+    (apply str (map #(format "%02x" %) (.digest md)))))
+
+(defn verify-checksum [release asset-name tarball dir]
+  ;; Releases publish a `sha256sum` sidecar next to each tarball. Verify it
+  ;; when present; older releases without one just get a warning.
+  (if-let [sha-url (find-asset-url release (str asset-name ".sha256"))]
+    (let [sha-file (io/file dir ".redin-download.sha256")]
+      (download-file sha-url (.getPath sha-file))
+      (let [expected (first (str/split (str/trim (slurp sha-file)) #"\s+"))
+            actual (sha256-hex tarball)]
+        (.delete sha-file)
+        (when (not= expected actual)
+          (println (str "  ERROR: checksum mismatch for " asset-name))
+          (println (str "    expected " expected))
+          (println (str "    actual   " actual))
+          (.delete tarball)
+          (System/exit 1))
+        (println "  Checksum OK")))
+    (println "  WARNING: no .sha256 asset published; skipping verification")))
+
 ;; ---------------------------------------------------------------------------
 ;; Install release into .redin/
 ;; ---------------------------------------------------------------------------
 
+(defn flatten-prefixed-bundle [redin-dir]
+  ;; The bundle must place the binary at .redin/redin (redinw execs it
+  ;; there). If a tarball instead nests everything under a single top-level
+  ;; directory (the originally published v0.7.0 asset did), lift its
+  ;; contents up one level.
+  (when-not (.exists (io/file redin-dir "redin"))
+    (let [children (vec (.listFiles redin-dir))
+          only-dir (when (and (= 1 (count children))
+                              (.isDirectory (first children)))
+                     (first children))]
+      (when (and only-dir (.exists (io/file only-dir "redin")))
+        (println (str "  WARNING: tarball nests its contents under "
+                      (.getName only-dir) "/ — flattening"))
+        (doseq [f (.listFiles only-dir)]
+          (java.nio.file.Files/move
+           (.toPath f)
+           (.toPath (io/file redin-dir (.getName f)))
+           (make-array java.nio.file.CopyOption 0)))
+        (.delete only-dir)))))
+
 (defn install-release [dir version]
   (let [redin-dir (io/file dir ".redin")
-        tarball (io/file dir ".redin-download.tar.gz")]
+        tarball (io/file dir ".redin-download.tar.gz")
+        asset-name (str "redin-" version "-linux-amd64.tar.gz")]
     ;; Fetch release info
     (print (str "Fetching release " version "... "))
     (flush)
     (let [release (fetch-release-info version)
-          url (find-tarball-url release)]
+          url (find-asset-url release asset-name)]
       (when-not url
         (println "FAILED")
-        (println (str "No linux-amd64 tarball found for " version))
+        (println (str "No " asset-name " asset found for release " version))
         (System/exit 1))
-      (println "OK"))
+      (println "OK")
 
-    ;; Download
-    (let [release (fetch-release-info version)
-          url (find-tarball-url release)]
-      (download-file url (.getPath tarball)))
+      ;; Download + verify
+      (download-file url (.getPath tarball))
+      (verify-checksum release asset-name tarball dir))
 
     ;; Remove old .redin/ contents (keep directory)
     (when (.exists redin-dir)
@@ -78,6 +129,14 @@
       (when (not= exit 0)
         (println "  ERROR: tar extraction failed")
         (System/exit 1)))
+
+    ;; The install is only good if the binary landed where redinw expects
+    ;; it. Repair a prefixed tarball; anything else fails loudly instead of
+    ;; reporting a successful install with a broken .redin/.
+    (flatten-prefixed-bundle redin-dir)
+    (when-not (.exists (io/file redin-dir "redin"))
+      (println "  ERROR: extracted bundle has no binary at .redin/redin — unexpected tarball layout")
+      (System/exit 1))
 
     ;; Write version file
     (spit (io/file redin-dir "version") (str version "\n"))

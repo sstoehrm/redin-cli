@@ -5,7 +5,7 @@ Project manager for [redin](https://github.com/sstoehrm/redin) — a re-frame in
 ## Install
 
 ```bash
-curl -sL https://raw.githubusercontent.com/sstoehrm/redin-cli/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/sstoehrm/redin-cli/main/install.sh | bash
 ```
 
 Requires [Babashka](https://babashka.org/).
